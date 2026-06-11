@@ -400,6 +400,17 @@
    - 解决：`src/styles.css` 中 `.live-feed, .live-feed *` 已加入 `rgba(0,0,0,0.95)` 的双层 `text-shadow`，覆盖实时解说标题、时间和播报正文。
    - 验证：浏览器中读取 `.kickoff-ball` 的 `backgroundImage` 为 `src/assets/ball/kickoff-football-realistic.webp`；读取 `.feed-list p` 的 `text-shadow` 为 `rgba(0, 0, 0, 0.95) 0px 1px 2px, rgba(0, 0, 0, 0.95) 0px 2px 8px`。
 
+21. 用户要求把项目部署到 GitHub，并通过 GitHub Pages 二级站点直接访问。
+   - 目标仓库：`dudachun/worldcup-minigame`。
+   - 目标访问地址：`https://dudachun.github.io/worldcup-minigame/`。
+   - 已新增 `.github/workflows/deploy.yml`，push 到 `main` 后会自动执行 `npm ci`、`npm test`、`npm run build` 并部署 `dist` 到 GitHub Pages。
+   - 已新增 `.gitignore`，排除 `node_modules`、`dist`、`dev-server.log`、`*.tsbuildinfo`、`*.log`。
+   - 已新增 `README.md`，记录本地运行、验证和 GitHub Pages 地址。
+   - 已更新 `vite.config.ts`，生产模式 `base` 为 `/worldcup-minigame/`，本地开发仍为 `/`。
+   - 本地 Git 仓库已初始化，分支为 `main`；已创建提交 `4f1afed`，提交信息为 `Deploy worldcup minigame to GitHub Pages`。
+   - 当前阻塞：本机没有 `gh` CLI，也没有 `GITHUB_TOKEN`/`GH_TOKEN`；GitHub App 当前只安装在账号 `dachun12345`，不是用户指定的 `dudachun`；`dudachun/worldcup-minigame` 查询为 404；普通 `git push` 到 GitHub 时网络连接 `github.com:443` 超时。
+   - 继续方式：用户需要先在 GitHub 上创建空仓库 `dudachun/worldcup-minigame` 并确保本机 Git 可以认证推送，或把 Codex/GitHub App 连接到 `dudachun` 账号后继续。
+
 1. `npm init -y` 失败。
    - 原因：npm 默认使用中文目录名 `田总足球小游戏` 作为 package name，不符合 npm 包名规则。
    - 解决：手动创建合法英文包名 `world-cup-ai-shootout` 的 `package.json`。
