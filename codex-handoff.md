@@ -285,11 +285,13 @@
 - `src/App.tsx`：主界面、流程状态、赛后数据。
 - `src/styles.css`：整体视觉和响应式样式。
 - `src/data/teams.ts`：49 支球队、真实球员显示名、分组模式、默认阵型和默认战术。
+- `src/data/teamPower.ts`：49 支球队本地战力快照，包含 FIFA 排名点数、Elo 参考值、综合战力和档位。
 - `src/data/tactics.ts`：战术系统。
 - `src/data/formations.ts`：7 种 11 人制阵型坐标模板。
 - `src/simulator/types.ts`：核心类型。
 - `src/simulator/fieldGeometry.ts`：射门结果落点计算，比赛动画和射门地图共用。
 - `src/simulator/scoreboard.ts`：可见比分计算，保证未播放事件不会提前暴露最终比分。
+- `src/simulator/assistValue.ts`：助力值胜率、回报、金额解析、输入校验和赛后结算。
 - `src/simulator/random.ts`：可复现随机工具。
 - `src/simulator/matchSimulator.ts`：比赛模拟器。
 - `src/game/MatchField.tsx`：DOM/CSS 球场动画渲染，使用 transition、keyframes 和 setTimeout 时间线。
@@ -408,8 +410,42 @@
    - 已新增 `README.md`，记录本地运行、验证和 GitHub Pages 地址。
    - 已更新 `vite.config.ts`，生产模式 `base` 为 `/worldcup-minigame/`，本地开发仍为 `/`。
    - 本地 Git 仓库已初始化，分支为 `main`；已创建提交 `4f1afed`，提交信息为 `Deploy worldcup minigame to GitHub Pages`。
-   - 当前阻塞：本机没有 `gh` CLI，也没有 `GITHUB_TOKEN`/`GH_TOKEN`；GitHub App 当前只安装在账号 `dachun12345`，不是用户指定的 `dudachun`；`dudachun/worldcup-minigame` 查询为 404；普通 `git push` 到 GitHub 时网络连接 `github.com:443` 超时。
-   - 继续方式：用户需要先在 GitHub 上创建空仓库 `dudachun/worldcup-minigame` 并确保本机 Git 可以认证推送，或把 Codex/GitHub App 连接到 `dudachun` 账号后继续。
+   - 用户已手动创建空仓库 `dudachun/worldcup-minigame`；本地提交 `4f1afed` 和 `7465f13` 已推送到远端 `main`。
+   - 首次 GitHub Actions 失败在 `Configure Pages`：仓库未启用 Pages；随后 workflow 增加 `actions/configure-pages@v5` 的 `enablement: true`。
+   - 第二次 Actions 仍失败：`GITHUB_TOKEN` 无权创建 Pages 站点，错误为 `Resource not accessible by integration`。
+   - 已使用本机 Git Credential Manager 中的 `dudachun` HTTPS 凭据通过 GitHub REST API 创建 Pages 站点，`build_type=workflow`。
+   - 已通过 GitHub REST API 把 workflow 修复提交到远端，远端提交为 `ab8b70a`；重跑 Actions `27325433769` 第 2 次 attempt 成功。
+   - 已验证线上地址 `https://dudachun.github.io/worldcup-minigame/` 返回 `200 OK`，首页 HTML、主 JS、主 CSS 均返回 `200 OK`。
+   - 注意：本机普通 `git push`/`git ls-remote` 仍可能因为 `github.com:443` 网络不通失败；本地 `main` 当前有同内容提交 `7dcd062`，远端通过 API 生成的是 `ab8b70a`。等本机到 GitHub 的 git 网络恢复后，应执行 `git fetch origin` 和 `git pull --rebase`，让本地分支与远端重新对齐。
+
+22. 用户要求优化第二个界面，也就是赛前选队界面。
+   - 已把比赛时长固定为 60 秒，玩家不再选择 60/120/180 秒。
+   - 已取消玩家战术选择，界面只展示两队默认战术和默认阵型；模拟仍使用球队 `defaultTacticId`。
+   - 已把主队/客队选队面板改为区域胶囊筛选：`全部 / 北美 / 亚洲 / 非洲 / 欧洲 / 南美 / 大洋洲`。
+   - 区域胶囊已从左侧竖排改为球队列表上方一排，不再出现区域滚动条；手机端隐藏胶囊数字计数，保证区域名称完整显示。
+   - `全部`默认显示所有球队，球队列表在固定高度内滚动；桌面端每个选队器一行只显示 5 个球队卡，手机端只显示 1 行 2 个球队卡。
+   - 已在同一排筛选胶囊中加入世界杯小组筛选：`A组` 到 `L组`；胶囊进一步缩小，桌面端区域和小组尽量压进同一排，手机端使用短标签减少溢出。
+   - 已压缩顶部对阵条、球队卡、模式按钮、默认战术摘要区，第二屏现在更像紧凑赛事选择界面。
+   - 已同步更新 `scripts/qa-ui.mjs`，新增断言：区域/小组胶囊存在、固定 60 秒、无时长按钮、无战术按钮、筛选胶囊无滚动、球队列表只露一行、桌面最多 5 列、手机最多 2 列。
+
+23. 用户反馈比赛画面球场贴图有两层。
+   - 根因：`src/assets/pitch-bg.webp` 本身已经包含完整球场白线、禁区和球门；`src/game/MatchField.tsx` 又额外渲染了一套 `.pitch-lines` DOM 白线，`src/styles.css` 的 `.field-playfield::before` 还叠加了 `repeating-linear-gradient` 草皮条纹，视觉上形成双层球场。
+   - 解决：已移除 `MatchField` 中的 `PitchLines` 静态白线 DOM，并删除对应 CSS。
+   - 解决：`.field-playfield::before` 改为只做暗角/光照，不再生成重复草皮纹理。
+   - 解决：`.field-goal` 默认透明，只在 `flash` 状态下显示进球反馈，避免常驻画出第二套球门。
+   - QA：`scripts/qa-ui.mjs` 新增断言：比赛页不能存在 `.pitch-lines`，球场背景只能有 1 层贴图纹理，伪元素不能含 `url()` 或 `repeating-linear-gradient` 纹理层。
+
+24. 用户要求新增“助力值”系统。
+   - 流程已改为四屏：`首页 -> 选队页 -> 助力值页 -> 比赛页`。
+   - 初始助力值为 `10000.00`，使用 `localStorage` 持久保存，key 为 `worldcup-minigame-assist-balance-cents`。
+   - 金额内部统一用整数分值计算，避免浮点精度问题；输入支持最多两位小数，最低 `1.00`，单次最高 `2000.00`，且不能超过当前余额。
+   - 助力行为只做赛前预测和赛后结算，不影响比赛模拟结果。
+   - 平局返还，余额不变；支持球队获胜增加 `投入值 * 回报倍率`；支持球队输球扣除投入值。
+   - 新增 `src/data/teamPower.ts`：为 49 支球队提供本地战力快照，参考 FIFA 男足排名点数和 World Football Elo Ratings，再结合现有 `ratings` 计算 `power.rating`、`tier`、`fifaRank`、`fifaPoints`、`eloRating`。
+   - 新增 `src/simulator/assistValue.ts`：负责助力市场、胜率、回报倍率、金额解析、输入校验和胜负平结算。
+   - `src/App.tsx` 新增 `AssistScreen`、`AssistTeamCard`、`AssistSettlementCard`；结果页展示助力球队、投入、命中/未中/平局返还、本场变化和当前余额。
+   - `tests/assistValue.test.ts` 覆盖每队战力、金额解析、最低/最高/余额校验、弱队高回报、胜负平结算。
+   - `scripts/qa-ui.mjs` 已更新为四屏流程，验证助力页 2 张球队卡、初始余额、战力范围、`500.25` 输入、胜负平预览、赛后结算卡、桌面和移动端助力页截图。
 
 1. `npm init -y` 失败。
    - 原因：npm 默认使用中文目录名 `田总足球小游戏` 作为 package name，不符合 npm 包名规则。
@@ -443,8 +479,8 @@
 - 官方分组仍为 48 队，`worldCupGroupsWithChina` 可用于中国替换伊拉克模式。
 - 49 个抽象队徽文件检查：通过，打包时只包含实际队徽，不包含源图集。
 - 球队卡片选择器修改后 `npm run build`：通过。
-- `npm test`：通过，1 个测试文件、10 个测试。
-- `npm run qa:ui`：通过，目标 URL `http://127.0.0.1:5175/`，检测到 98 个球队卡按钮、22 个 DOM 球员/门将点、0 个 canvas、12 条完场播报、12 个赛后射门点；同时验证比赛刚开始比分为 0-0。
+- `npm test`：通过，2 个测试文件、14 个测试。
+- `npm run qa:ui`：通过，目标 URL `http://127.0.0.1:5175/`，检测到 98 个球队卡按钮、38 个区域/小组胶囊按钮、桌面球队列表 5 列、手机球队列表 2 列、助力页 2 张球队卡、初始助力余额 `10000.00`、有效战力值、`500.25` 助力输入、胜负平预览、22 个 DOM 球员/门将点、0 个 canvas、0 个额外 `.pitch-lines` 球场线层、1 层球场贴图纹理、10 条完场播报、10 个赛后射门点、赛后助力结算卡；同时验证比赛刚开始比分为 0-0。
 - Browser in-app 验证：通过，当前页 title 为 `2026 世界杯 AI 模拟器`；比赛页检测到 22 个 DOM 球员/门将点、0 个 canvas、实时解说头部为 `实时解说完场`，无 `/` 计数暴露，控制台无错误/警告；设置页默认战术和球队阵型标签正常显示。
 - UI 验收截图输出到系统临时目录：
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-home.png`
@@ -452,10 +488,12 @@
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-transition-cover.png`
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-transition-football-realistic.png`
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-setup.png`
+  - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-assist.png`
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-match-animation.png`
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\desktop-results.png`
   - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\mobile-setup.png`
-- 最新 `npm run build`：通过。主要球场背景构建产物为 `pitch-bg-*.webp` 约 28KB，首页背景 `football-hero-*.webp` 约 167KB，写实过场足球 `kickoff-football-realistic-*.webp` 约 93KB；主 JS 约 260KB gzip 前、约 83KB gzip 后。
+  - `C:\Users\GM\AppData\Local\Temp\world-cup-ai-shootout-qa\mobile-assist.png`
+- 最新 `npm run build`：通过。主要球场背景构建产物为 `pitch-bg-*.webp` 约 28KB，首页背景 `football-hero-*.webp` 约 167KB，写实过场足球 `kickoff-football-realistic-*.webp` 约 93KB；主 JS 约 271KB gzip 前、约 87KB gzip 后。
 
 ## 下一步开发计划
 
@@ -467,7 +505,7 @@
 4. 把本轮 DOM/CSS 球场动画沉淀为可复用项目模板或 skill：输入事件时间线，输出球场点位演出。
 5. 若后续要做更深阵容系统，再把每队从当前“5 名核心进攻球员 + 1 名门将”扩展到完整大名单，并让阵型位置绑定真实球员。
 6. 增加更多赛后标签和爆冷/门神/效率等解释性文案。
-7. 做一轮人工玩法验收，重点看 60/120/180 秒三种模式下 10-15 条播报的体感节奏是否合适。
+7. 做一轮人工玩法验收，重点看固定 60 秒模式下 10-15 条播报的体感节奏是否合适；如果未来恢复多时长，需重新设计时长入口而不是放回旧分段控件。
 
 ## 新会话接力说明
 

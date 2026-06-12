@@ -70,7 +70,6 @@ export function MatchField({ match, currentEvent }: MatchFieldProps) {
   return (
     <div className="match-field" aria-label="2D 比赛球场">
       <div className={`field-playfield ${frame.effect ? `effect-${frame.effect}` : ''}`} style={fieldStyle}>
-        <PitchLines />
         <div className={`field-goal field-goal-left ${frame.goalFlash === 'left' ? 'flash' : ''}`} />
         <div className={`field-goal field-goal-right ${frame.goalFlash === 'right' ? 'flash' : ''}`} />
 
@@ -98,22 +97,6 @@ export function MatchField({ match, currentEvent }: MatchFieldProps) {
 
         <div className="field-status">{frame.status}</div>
       </div>
-    </div>
-  );
-}
-
-function PitchLines() {
-  return (
-    <div className="pitch-lines" aria-hidden="true">
-      <span className="pitch-line halfway" />
-      <span className="pitch-line center-circle" />
-      <span className="pitch-line center-spot" />
-      <span className="pitch-line box-left" />
-      <span className="pitch-line box-right" />
-      <span className="pitch-line six-left" />
-      <span className="pitch-line six-right" />
-      <span className="pitch-line spot-left" />
-      <span className="pitch-line spot-right" />
     </div>
   );
 }

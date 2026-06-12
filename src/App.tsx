@@ -7,11 +7,36 @@ import { getShotResultPoint } from './simulator/fieldGeometry';
 import { simulateMatch } from './simulator/matchSimulator';
 import { getVisibleScore } from './simulator/scoreboard';
 import type { MatchDuration, MatchEvent, MatchResult, TacticId, Team } from './simulator/types';
+import {
+  createAssistMarket,
+  createAssistSlip,
+  formatAssistCents,
+  formatAssistPercent,
+  getPotentialProfitCents,
+  initialAssistBalanceCents,
+  maxAssistStakeCents,
+  minAssistStakeCents,
+  parseAssistAmountToCents,
+  settleAssistSlip,
+  validateAssistStake,
+} from './simulator/assistValue';
+import type { AssistMarket, AssistSettlement, AssistSide, AssistSlip } from './simulator/assistValue';
 
-const durations: MatchDuration[] = [60, 120, 180];
+const fixedMatchDuration: MatchDuration = 60;
+const assistBalanceStorageKey = 'worldcup-minigame-assist-balance-cents';
 const groups = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+const regionFilters = ['全部', '北美', '亚洲', '非洲', '欧洲', '南美', '大洋洲'];
 
-type Screen = 'home' | 'transition' | 'setup' | 'match';
+type TeamFilterPill = {
+  id: string;
+  type: 'all' | 'region' | 'group';
+  value: string;
+  label: string;
+  shortLabel: string;
+  count: number;
+};
+
+type Screen = 'home' | 'transition' | 'setup' | 'assist' | 'match';
 type MatchPhase = 'running' | 'results';
 type TeamPoolMode = 'free' | 'official' | 'china';
 
@@ -55,19 +80,22 @@ function App() {
   const availableTeamIds = useMemo(() => new Set(availableTeams.map((team) => team.id)), [availableTeams]);
   const [homeTeamId, setHomeTeamId] = useState(availableTeams[0].id);
   const [awayTeamId, setAwayTeamId] = useState(availableTeams[1].id);
-  const [duration, setDuration] = useState<MatchDuration>(120);
   const [homeTacticId, setHomeTacticId] = useState<TacticId>(availableTeams[0].defaultTacticId);
   const [awayTacticId, setAwayTacticId] = useState<TacticId>(availableTeams[1].defaultTacticId);
   const [matchPhase, setMatchPhase] = useState<MatchPhase>('running');
   const [match, setMatch] = useState<MatchResult | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [assistBalanceCents, setAssistBalanceCents] = useState(loadAssistBalanceCents);
+  const [assistSlip, setAssistSlip] = useState<AssistSlip | null>(null);
+  const [assistSettlement, setAssistSettlement] = useState<AssistSettlement | null>(null);
 
   const homeTeam = availableTeams.find((team) => team.id === homeTeamId) ?? availableTeams[0];
   const awayTeam = availableTeams.find((team) => team.id === awayTeamId) ?? availableTeams[1];
+  const assistMarket = useMemo(() => createAssistMarket(homeTeam, awayTeam), [homeTeam, awayTeam]);
   const revealedEvents = match?.events.filter((event) => event.second <= elapsed) ?? [];
   const currentEvent = revealedEvents[revealedEvents.length - 1] ?? null;
   const liveScore = matchPhase === 'results' && match ? match.finalScore : getVisibleScore(match?.events ?? [], elapsed);
-  const remaining = match ? Math.max(0, match.duration - elapsed) : duration;
+  const remaining = match ? Math.max(0, match.duration - elapsed) : fixedMatchDuration;
 
   useEffect(() => {
     const firstAvailable = availableTeams[0]?.id;
@@ -86,6 +114,10 @@ function App() {
       }
     }
   }, [availableTeamIds, availableTeams, awayTeamId, homeTeamId]);
+
+  useEffect(() => {
+    saveAssistBalanceCents(assistBalanceCents);
+  }, [assistBalanceCents]);
 
   function changeHomeTeam(teamId: string) {
     const nextTeam = availableTeams.find((team) => team.id === teamId);
@@ -119,13 +151,30 @@ function App() {
     return () => window.clearInterval(timer);
   }, [screen, matchPhase, match]);
 
-  function startMatch() {
+  useEffect(() => {
+    if (screen !== 'match' || matchPhase !== 'results' || !match || !assistSlip || assistSettlement) return;
+
+    const nextSettlement = settleAssistSlip(match, assistSlip, assistBalanceCents);
+    setAssistSettlement(nextSettlement);
+    setAssistBalanceCents(nextSettlement.balanceAfterCents);
+  }, [assistBalanceCents, assistSettlement, assistSlip, match, matchPhase, screen]);
+
+  function openAssistScreen() {
+    setMatch(null);
+    setElapsed(0);
+    setMatchPhase('running');
+    setAssistSlip(null);
+    setAssistSettlement(null);
+    setScreen('assist');
+  }
+
+  function startMatch(nextAssistSlip: AssistSlip | null) {
     const nextHome = homeTeam;
     const nextAway = awayTeam.id === nextHome.id ? availableTeams.find((team) => team.id !== nextHome.id)! : awayTeam;
     const nextMatch = simulateMatch({
       homeTeam: nextHome,
       awayTeam: nextAway,
-      duration,
+      duration: fixedMatchDuration,
       homeTactic: tacticById[homeTacticId],
       awayTactic: tacticById[awayTacticId],
     });
@@ -134,6 +183,8 @@ function App() {
     setMatch(nextMatch);
     setElapsed(0);
     setMatchPhase('running');
+    setAssistSlip(nextAssistSlip);
+    setAssistSettlement(null);
     setScreen('match');
   }
 
@@ -153,6 +204,8 @@ function App() {
     setMatch(null);
     setElapsed(0);
     setMatchPhase('running');
+    setAssistSlip(null);
+    setAssistSettlement(null);
   }
 
   function returnHome() {
@@ -160,6 +213,8 @@ function App() {
     setMatch(null);
     setElapsed(0);
     setMatchPhase('running');
+    setAssistSlip(null);
+    setAssistSettlement(null);
   }
 
   function finishNow() {
@@ -185,14 +240,23 @@ function App() {
           awayTeamId={awayTeamId}
           onHomeTeamChange={changeHomeTeam}
           onAwayTeamChange={changeAwayTeam}
-          duration={duration}
-          onDurationChange={setDuration}
+          duration={fixedMatchDuration}
           homeTacticId={homeTacticId}
           awayTacticId={awayTacticId}
-          onHomeTacticChange={setHomeTacticId}
-          onAwayTacticChange={setAwayTacticId}
-          onStartMatch={startMatch}
+          onStartMatch={openAssistScreen}
           onBackHome={returnHome}
+        />
+      ) : null}
+
+      {screen === 'assist' ? (
+        <AssistScreen
+          homeTeam={homeTeam}
+          awayTeam={awayTeam}
+          balanceCents={assistBalanceCents}
+          market={assistMarket}
+          onConfirm={startMatch}
+          onSkip={() => startMatch(null)}
+          onBackSetup={returnToSetup}
         />
       ) : null}
 
@@ -207,8 +271,11 @@ function App() {
           currentEvent={currentEvent}
           revealedEvents={revealedEvents}
           onFinishNow={finishNow}
-          onRestart={startMatch}
+          onRestart={openAssistScreen}
           onBackSetup={returnToSetup}
+          assistBalanceCents={assistBalanceCents}
+          assistSlip={assistSlip}
+          assistSettlement={assistSettlement}
         />
       ) : null}
     </main>
@@ -253,11 +320,8 @@ function SetupScreen({
   onHomeTeamChange,
   onAwayTeamChange,
   duration,
-  onDurationChange,
   homeTacticId,
   awayTacticId,
-  onHomeTacticChange,
-  onAwayTacticChange,
   onStartMatch,
   onBackHome,
 }: {
@@ -271,11 +335,8 @@ function SetupScreen({
   onHomeTeamChange: (teamId: string) => void;
   onAwayTeamChange: (teamId: string) => void;
   duration: MatchDuration;
-  onDurationChange: (duration: MatchDuration) => void;
   homeTacticId: TacticId;
   awayTacticId: TacticId;
-  onHomeTacticChange: (tactic: TacticId) => void;
-  onAwayTacticChange: (tactic: TacticId) => void;
   onStartMatch: () => void;
   onBackHome: () => void;
 }) {
@@ -290,8 +351,8 @@ function SetupScreen({
 
       <div className="setup-panel setup-panel-full">
         <div className="panel-heading">
-          <h1>选择球队与战术</h1>
-          <p>配置主客队、比赛时长和两队战术，确认后进入比赛直播界面。</p>
+          <h1>选择主队与客队</h1>
+          <p>比赛固定为60秒，两队采用各自默认阵型与默认战术。</p>
         </div>
 
         <ModeSwitch value={teamPoolMode} onChange={onTeamPoolModeChange} disabled={false} />
@@ -324,39 +385,15 @@ function SetupScreen({
           />
         </div>
 
-        <div className="setup-options-grid">
-          <section className="setup-option-panel">
-            <div className="section-label">比赛时长</div>
-            <div className="segmented">
-              {durations.map((option) => (
-                <button
-                  className={duration === option ? 'active' : ''}
-                  type="button"
-                  key={option}
-                  onClick={() => onDurationChange(option)}
-                >
-                  {option}s
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="setup-option-panel">
-            <div className="tactic-columns">
-              <TacticPicker
-                label={`${homeTeam.name}战术`}
-                value={homeTacticId}
-                onChange={onHomeTacticChange}
-                disabled={false}
-              />
-              <TacticPicker
-                label={`${awayTeam.name}战术`}
-                value={awayTacticId}
-                onChange={onAwayTacticChange}
-                disabled={false}
-              />
-            </div>
-          </section>
+        <div className="readonly-match-plan" aria-label="默认比赛设置">
+          <div className="match-duration-chip">
+            <span>比赛时长</span>
+            <strong>{duration}s</strong>
+          </div>
+          <div className="tactic-summary-grid">
+            <TacticSummary team={homeTeam} tacticId={homeTacticId} />
+            <TacticSummary team={awayTeam} tacticId={awayTacticId} />
+          </div>
         </div>
 
         <div className="actions setup-actions">
@@ -392,6 +429,193 @@ function TeamSlot({ team, label, tacticId }: { team: Team; label: string; tactic
   );
 }
 
+function AssistScreen({
+  homeTeam,
+  awayTeam,
+  balanceCents,
+  market,
+  onConfirm,
+  onSkip,
+  onBackSetup,
+}: {
+  homeTeam: Team;
+  awayTeam: Team;
+  balanceCents: number;
+  market: AssistMarket;
+  onConfirm: (slip: AssistSlip) => void;
+  onSkip: () => void;
+  onBackSetup: () => void;
+}) {
+  const [selectedSide, setSelectedSide] = useState<AssistSide>('home');
+  const [stakeInput, setStakeInput] = useState('100.00');
+  const selectedTeam = selectedSide === 'home' ? homeTeam : awayTeam;
+  const selectedMarket = market[selectedSide];
+  const stakeCents = parseAssistAmountToCents(stakeInput);
+  const stakeError = validateAssistStake(stakeCents, balanceCents);
+  const previewStakeCents = stakeCents ?? 0;
+  const potentialProfitCents = getPotentialProfitCents(previewStakeCents, selectedMarket.profitRate);
+  const canConfirm = stakeError === '' && stakeCents !== null;
+  const maxAllowedCents = Math.min(maxAssistStakeCents, balanceCents);
+
+  function setPreset(cents: number) {
+    setStakeInput(formatAssistCents(Math.min(cents, maxAllowedCents)));
+  }
+
+  function confirmAssist() {
+    if (!canConfirm || stakeCents === null) return;
+    onConfirm(createAssistSlip(market, selectedSide, stakeCents));
+  }
+
+  return (
+    <section className="assist-screen" aria-label="助力值选择">
+      <div className="screen-topbar">
+        <button className="text-action" type="button" onClick={onBackSetup}>
+          返回选队
+        </button>
+        <strong>助力值</strong>
+      </div>
+
+      <div className="assist-panel">
+        <div className="assist-heading">
+          <div>
+            <span>赛前助力</span>
+            <h1>选择支持球队</h1>
+            <p>助力值只用于赛前预测和赛后结算，不影响比赛结果。平局返还。</p>
+          </div>
+          <div className="assist-balance">
+            <span>当前余额</span>
+            <strong>{formatAssistCents(balanceCents)}</strong>
+          </div>
+        </div>
+
+        <div className="assist-matchup" aria-label="助力球队">
+          <AssistTeamCard
+            team={homeTeam}
+            side="home"
+            label="主队"
+            marketTeam={market.home}
+            selected={selectedSide === 'home'}
+            onSelect={setSelectedSide}
+          />
+          <AssistTeamCard
+            team={awayTeam}
+            side="away"
+            label="客队"
+            marketTeam={market.away}
+            selected={selectedSide === 'away'}
+            onSelect={setSelectedSide}
+          />
+        </div>
+
+        <div className="assist-control-grid">
+          <section className="assist-input-panel">
+            <label className="assist-input">
+              <span>投入助力值</span>
+              <input
+                aria-invalid={stakeError ? 'true' : 'false'}
+                inputMode="decimal"
+                max={formatAssistCents(maxAllowedCents)}
+                min={formatAssistCents(minAssistStakeCents)}
+                onChange={(event) => setStakeInput(event.target.value)}
+                step="0.01"
+                type="text"
+                value={stakeInput}
+              />
+            </label>
+            <div className="assist-presets" aria-label="快捷投入">
+              {[10000, 50000, 100000, 200000].map((cents) => (
+                <button key={cents} type="button" onClick={() => setPreset(cents)} disabled={cents > maxAllowedCents}>
+                  {formatAssistCents(cents)}
+                </button>
+              ))}
+            </div>
+            {stakeError ? <p className="assist-error">{stakeError}</p> : null}
+          </section>
+
+          <section className="assist-preview" style={teamVars(selectedTeam)} aria-label="助力预览">
+            <span>当前选择</span>
+            <strong>{selectedTeam.name}</strong>
+            <div className="assist-preview-lines">
+              <p>
+                若胜
+                <b>+{formatAssistCents(potentialProfitCents)}</b>
+              </p>
+              <p>
+                若负
+                <b>-{formatAssistCents(previewStakeCents)}</b>
+              </p>
+              <p>
+                平局
+                <b>返还</b>
+              </p>
+            </div>
+            <small>
+              战力 {selectedMarket.powerRating.toFixed(1)}，预估胜率 {formatAssistPercent(selectedMarket.winChance)}
+            </small>
+          </section>
+        </div>
+
+        <div className="actions assist-actions">
+          <button className="secondary-action" type="button" onClick={onSkip}>
+            跳过助力
+          </button>
+          <button className="primary-action" type="button" onClick={confirmAssist} disabled={!canConfirm}>
+            确认助力，开始比赛
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AssistTeamCard({
+  team,
+  side,
+  label,
+  marketTeam,
+  selected,
+  onSelect,
+}: {
+  team: Team;
+  side: AssistSide;
+  label: string;
+  marketTeam: AssistMarket[AssistSide];
+  selected: boolean;
+  onSelect: (side: AssistSide) => void;
+}) {
+  return (
+    <button
+      className={`assist-team-card ${selected ? 'active' : ''}`}
+      style={teamVars(team)}
+      type="button"
+      onClick={() => onSelect(side)}
+      aria-pressed={selected}
+    >
+      <span className="assist-card-top">
+        <img src={team.emblemUrl} alt="" aria-hidden="true" />
+        <span>
+          <small>{label}</small>
+          <strong>{team.name}</strong>
+        </span>
+      </span>
+      <span className="assist-card-data">
+        <b>{marketTeam.powerRating.toFixed(1)}</b>
+        <small>{marketTeam.tier}档战力</small>
+      </span>
+      <span className="assist-card-metrics">
+        <span>
+          胜率
+          <b>{formatAssistPercent(marketTeam.winChance)}</b>
+        </span>
+        <span>
+          回报
+          <b>+{Math.round(marketTeam.profitRate * 100)}%</b>
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function MatchScreen({
   homeTeam,
   awayTeam,
@@ -404,6 +628,9 @@ function MatchScreen({
   onFinishNow,
   onRestart,
   onBackSetup,
+  assistBalanceCents,
+  assistSlip,
+  assistSettlement,
 }: {
   homeTeam: Team;
   awayTeam: Team;
@@ -416,6 +643,9 @@ function MatchScreen({
   onFinishNow: () => void;
   onRestart: () => void;
   onBackSetup: () => void;
+  assistBalanceCents: number;
+  assistSlip: AssistSlip | null;
+  assistSettlement: AssistSettlement | null;
 }) {
   return (
     <section className="match-screen" aria-label="比赛直播与结果">
@@ -452,7 +682,14 @@ function MatchScreen({
         </div>
       </section>
 
-      {match && matchPhase === 'results' ? <ResultsPanel match={match} /> : null}
+      {match && matchPhase === 'results' ? (
+        <ResultsPanel
+          match={match}
+          assistBalanceCents={assistBalanceCents}
+          assistSlip={assistSlip}
+          assistSettlement={assistSettlement}
+        />
+      ) : null}
     </section>
   );
 }
@@ -512,25 +749,53 @@ function TeamPicker({
   disabled: boolean;
   onChange: (teamId: string) => void;
 }) {
-  const [query, setQuery] = useState('');
-  const [region, setRegion] = useState('全部');
-  const [group, setGroup] = useState('全部');
+  const [filterId, setFilterId] = useState('all');
   const selectedTeam = selectableTeams.find((team) => team.id === value) ?? selectableTeams[0];
-  const regions = useMemo(() => ['全部', ...Array.from(new Set(selectableTeams.map((team) => team.region)))], [selectableTeams]);
+  const filterPills = useMemo<TeamFilterPill[]>(
+    () => [
+      {
+        id: 'all',
+        type: 'all',
+        value: '全部',
+        label: '全部',
+        shortLabel: '全部',
+        count: selectableTeams.length,
+      },
+      ...regionFilters
+        .filter((item) => item !== '全部' && selectableTeams.some((team) => team.region === item))
+        .map((item) => ({
+          id: `region-${item}`,
+          type: 'region' as const,
+          value: item,
+          label: item,
+          shortLabel: item === '大洋洲' ? '大洋' : item,
+          count: selectableTeams.filter((team) => team.region === item).length,
+        })),
+      ...groups
+        .filter((group) => selectableTeams.some((team) => team.group === group))
+        .map((group) => ({
+          id: `group-${group}`,
+          type: 'group' as const,
+          value: group,
+          label: `${group}组`,
+          shortLabel: group,
+          count: selectableTeams.filter((team) => team.group === group).length,
+        })),
+    ],
+    [selectableTeams],
+  );
+  const activeFilter = filterPills.find((item) => item.id === filterId) ?? filterPills[0];
   const filteredTeams = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return selectableTeams.filter((team) => {
-      const matchesQuery =
-        !keyword ||
-        team.name.toLowerCase().includes(keyword) ||
-        team.shortName.toLowerCase().includes(keyword) ||
-        team.region.toLowerCase().includes(keyword) ||
-        team.group.toLowerCase().includes(keyword);
-      const matchesRegion = region === '全部' || team.region === region;
-      const matchesGroup = group === '全部' || team.group === group;
-      return matchesQuery && matchesRegion && matchesGroup;
-    });
-  }, [group, query, region, selectableTeams]);
+    if (!activeFilter || activeFilter.type === 'all') return selectableTeams;
+    if (activeFilter.type === 'region') return selectableTeams.filter((team) => team.region === activeFilter.value);
+    return selectableTeams.filter((team) => team.group === activeFilter.value);
+  }, [activeFilter, selectableTeams]);
+
+  useEffect(() => {
+    if (!filterPills.some((item) => item.id === filterId)) {
+      setFilterId('all');
+    }
+  }, [filterId, filterPills]);
 
   return (
     <section className="team-picker" style={teamVars(selectedTeam)}>
@@ -538,93 +803,67 @@ function TeamPicker({
         <span>{label}</span>
         <strong>{selectedTeam.name}</strong>
       </div>
-      <div className="team-filter-row">
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索球队、小组、洲"
-          disabled={disabled}
-        />
-        <select value={region} onChange={(event) => setRegion(event.target.value)} disabled={disabled}>
-          {regions.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-        <select value={group} onChange={(event) => setGroup(event.target.value)} disabled={disabled}>
-          <option value="全部">全部小组</option>
-          {groups.map((item) => (
-            <option key={item} value={item}>
-              {item}组
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="team-list" role="listbox" aria-label={`${label}球队列表`}>
-        {filteredTeams.map((team) => {
-          const isBlocked = team.id === blockedTeamId;
-          return (
+      <div className="team-picker-body">
+        <div className="region-pills" aria-label={`${label}球队筛选`}>
+          {filterPills.map((item) => (
             <button
-              key={team.id}
+              key={item.id}
               type="button"
-              role="option"
-              aria-selected={team.id === value}
-              className={team.id === value ? 'active' : ''}
-              onClick={() => onChange(team.id)}
-              disabled={disabled || isBlocked}
-              style={teamVars(team)}
+              className={filterId === item.id ? 'active' : ''}
+              onClick={() => setFilterId(item.id)}
+              disabled={disabled}
             >
-              <span className="team-card-logo" aria-hidden="true">
-                <img src={team.emblemUrl} alt="" />
-              </span>
-              <span className="team-card-copy">
-                <strong>{team.name}</strong>
-                <small className="team-card-meta">
-                  <span>{team.group}组</span>
-                  <span>{team.region}</span>
-                  <span>{team.shortName}</span>
-                  <span>{team.defaultFormationId}</span>
-                </small>
-              </span>
-              {isBlocked ? <em className="team-card-state">已选</em> : null}
+              <span className="pill-label-full">{item.label}</span>
+              <span className="pill-label-short">{item.shortLabel}</span>
+              <small>{item.count}</small>
             </button>
-          );
-        })}
+          ))}
+        </div>
+        <div className="team-list" role="listbox" aria-label={`${label}球队列表`}>
+          {filteredTeams.map((team) => {
+            const isBlocked = team.id === blockedTeamId;
+            return (
+              <button
+                key={team.id}
+                type="button"
+                role="option"
+                aria-selected={team.id === value}
+                className={team.id === value ? 'active' : ''}
+                onClick={() => onChange(team.id)}
+                disabled={disabled || isBlocked}
+                style={teamVars(team)}
+              >
+                <span className="team-card-logo" aria-hidden="true">
+                  <img src={team.emblemUrl} alt="" />
+                </span>
+                <span className="team-card-copy">
+                  <strong>{team.name}</strong>
+                  <small className="team-card-meta">
+                    <span>{team.group}组</span>
+                    <span>{team.region}</span>
+                    <span>{team.shortName}</span>
+                    <span>{team.defaultFormationId}</span>
+                  </small>
+                </span>
+                {isBlocked ? <em className="team-card-state">已选</em> : null}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </section>
   );
 }
 
-function TacticPicker({
-  label,
-  value,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  value: TacticId;
-  onChange: (tactic: TacticId) => void;
-  disabled: boolean;
-}) {
+function TacticSummary({ team, tacticId }: { team: Team; tacticId: TacticId }) {
+  const tactic = tactics.find((item) => item.id === tacticId);
+
   return (
-    <div className="tactic-picker">
-      <div className="section-label">{label}</div>
-      <div className="tactic-list">
-        {tactics.map((tactic) => (
-          <button
-            type="button"
-            key={tactic.id}
-            className={value === tactic.id ? 'active' : ''}
-            onClick={() => onChange(tactic.id)}
-            disabled={disabled}
-            title={tactic.description}
-          >
-            {tactic.name}
-          </button>
-        ))}
-      </div>
-    </div>
+    <article className="tactic-summary" style={teamVars(team)}>
+      <span>{team.name}</span>
+      <strong>{tactic?.name ?? '默认战术'}</strong>
+      <small>{team.defaultFormationId}</small>
+    </article>
   );
 }
 
@@ -664,7 +903,17 @@ function LiveFeed({
   );
 }
 
-function ResultsPanel({ match }: { match: MatchResult }) {
+function ResultsPanel({
+  match,
+  assistBalanceCents,
+  assistSlip,
+  assistSettlement,
+}: {
+  match: MatchResult;
+  assistBalanceCents: number;
+  assistSlip: AssistSlip | null;
+  assistSettlement: AssistSettlement | null;
+}) {
   const [selectedEventId, setSelectedEventId] = useState(() => getInitialEventId(match));
   const homeStats = match.teamStats[match.homeTeam.id];
   const awayStats = match.teamStats[match.awayTeam.id];
@@ -694,6 +943,13 @@ function ResultsPanel({ match }: { match: MatchResult }) {
           <small>{match.matchTag}</small>
         </div>
       </div>
+
+      <AssistSettlementCard
+        match={match}
+        balanceCents={assistBalanceCents}
+        slip={assistSlip}
+        settlement={assistSettlement}
+      />
 
       <div className="shot-review-grid">
         <ShotMap events={match.events} selectedEventId={selectedEvent?.id ?? ''} onSelect={setSelectedEventId} />
@@ -742,6 +998,65 @@ function ResultsPanel({ match }: { match: MatchResult }) {
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+function AssistSettlementCard({
+  match,
+  balanceCents,
+  slip,
+  settlement,
+}: {
+  match: MatchResult;
+  balanceCents: number;
+  slip: AssistSlip | null;
+  settlement: AssistSettlement | null;
+}) {
+  if (!slip) {
+    return (
+      <section className="assist-result-card neutral" aria-label="助力结算">
+        <div>
+          <span>助力结算</span>
+          <strong>本场未使用助力值</strong>
+        </div>
+        <b>{formatAssistCents(balanceCents)}</b>
+      </section>
+    );
+  }
+
+  if (!settlement) {
+    return (
+      <section className="assist-result-card neutral" aria-label="助力结算">
+        <div>
+          <span>助力结算</span>
+          <strong>结算中</strong>
+        </div>
+        <b>{formatAssistCents(balanceCents)}</b>
+      </section>
+    );
+  }
+
+  const assistedTeam = slip.teamId === match.homeTeam.id ? match.homeTeam : match.awayTeam;
+  const outcomeLabel =
+    settlement.outcome === 'win' ? '助力命中' : settlement.outcome === 'loss' ? '助力未中' : '平局返还';
+  const deltaLabel =
+    settlement.deltaCents > 0
+      ? `+${formatAssistCents(settlement.deltaCents)}`
+      : formatAssistCents(settlement.deltaCents);
+
+  return (
+    <section className={`assist-result-card ${settlement.outcome}`} style={teamVars(assistedTeam)} aria-label="助力结算">
+      <div>
+        <span>助力结算</span>
+        <strong>
+          {assistedTeam.name} · {outcomeLabel}
+        </strong>
+        <small>
+          投入 {formatAssistCents(slip.stakeCents)} · 当前余额 {formatAssistCents(settlement.balanceAfterCents)}
+        </small>
+      </div>
+      <b>{deltaLabel}</b>
     </section>
   );
 }
@@ -904,6 +1219,24 @@ function teamVars(team: Team): CSSProperties {
     '--team-primary': team.colors.primary,
     '--team-secondary': team.colors.secondary,
   } as CSSProperties;
+}
+
+function loadAssistBalanceCents() {
+  try {
+    const stored = window.localStorage.getItem(assistBalanceStorageKey);
+    const parsed = stored ? Number.parseInt(stored, 10) : initialAssistBalanceCents;
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : initialAssistBalanceCents;
+  } catch {
+    return initialAssistBalanceCents;
+  }
+}
+
+function saveAssistBalanceCents(balanceCents: number) {
+  try {
+    window.localStorage.setItem(assistBalanceStorageKey, String(balanceCents));
+  } catch {
+    // Local storage can be unavailable in privacy modes; the in-memory balance still works for this session.
+  }
 }
 
 export default App;

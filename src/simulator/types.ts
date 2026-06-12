@@ -36,6 +36,15 @@ export interface Ratings {
   stability: number;
 }
 
+export interface TeamPowerProfile {
+  rating: number;
+  tier: 'S' | 'A' | 'B' | 'C' | 'D';
+  fifaRank: number;
+  fifaPoints: number;
+  eloRating: number;
+  source: string;
+}
+
 export interface Attacker {
   id: string;
   name: string;
@@ -71,6 +80,7 @@ export interface Team {
   defaultFormationId: FormationId;
   defaultTacticId: TacticId;
   ratings: Ratings;
+  power: TeamPowerProfile;
   attackers: Attacker[];
   goalkeeper: Goalkeeper;
 }

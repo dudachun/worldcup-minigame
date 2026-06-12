@@ -1,4 +1,5 @@
 import type { FormationId, Ratings, TacticId, Team } from '../simulator/types';
+import { getTeamPowerProfile } from './teamPower';
 
 interface CorePlayerSeed {
   name: string;
@@ -966,6 +967,7 @@ export const teams: Team[] = teamSeeds.map((seed) => {
     defaultFormationId: defaults.formation,
     defaultTacticId: defaults.tactic,
     ratings: seed.ratings,
+    power: getTeamPowerProfile(seed.id, seed.ratings),
     attackers: seed.attackers.map((attacker, index) => ({
       id: `${seed.id}-a${index + 1}`,
       name: `${seed.name}${attacker.name}`,
